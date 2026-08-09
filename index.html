@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="manifest" href="./manifest.json">
+  <meta name="theme-color" content="#2d2b2b">
+  <link rel="icon" href="./icon-192.png">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./service-worker.js').catch(() => {});
+      });
+    }
+  </script>
+  <link rel="stylesheet" href="_ds/modernist-9807d20a-14e0-46e4-acde-1b48e5a8bf68/styles.css">
+  <script src="_ds/modernist-9807d20a-14e0-46e4-acde-1b48e5a8bf68/_ds_bundle.js"></script>
+  <script src="./dl-data.js"></script>
+  <style>
+    html,body{overscroll-behavior-y:contain}
+    body{margin:0;background:var(--color-neutral-200);font-family:var(--font-body)}
+    ::selection{background:var(--color-accent-200)}
+    a{color:var(--color-accent-700)}
+    a:hover{color:var(--color-accent-900)}
+    * { box-sizing:border-box; }
+    .scrollarea{overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
+    .scrollarea::-webkit-scrollbar{display:none}
+    .tap:active{opacity:.7}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+    :root{
+      --status-high: oklch(53% 0.22 25);
+      --status-high-tint: oklch(93% 0.05 25);
+      --status-low: oklch(55% 0.16 250);
+      --status-low-tint: oklch(93% 0.03 250);
+      --status-green: oklch(58% 0.15 145);
+    }
+  </style>
+</helmet>
+<div style="{{ screenStyle }}">
+    {{ screenBody }}
+    <sc-if value="{{ showDeleteConfirm }}">
+      <div style="position:absolute;inset:0;background:rgba(32,30,29,.6);display:flex;align-items:center;justify-content:center;z-index:50">
+        <div class="dialog" style="width:82%;max-width:320px">
+          <div class="dialog-title">Delete all sequences?</div>
+          <div class="dialog-body">This removes every saved sequence from the library. Run history is kept. This can't be undone.</div>
+          <div class="dialog-actions">
+            <button class="btn btn-secondary" onClick="{{ cancelDeleteAll }}">Cancel</button>
+            <button class="btn btn-primary" onClick="{{ confirmDeleteAll }}">Delete All</button>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ showClearHistoryConfirm }}">
+      <div style="position:absolute;inset:0;background:rgba(32,30,29,.6);display:flex;align-items:center;justify-content:center;z-index:50">
+        <div class="dialog" style="width:82%;max-width:320px">
+          <div class="dialog-title">Clear run history?</div>
+          <div class="dialog-body">This removes every logged run. Saved sequences in the library are kept. This can't be undone.</div>
+          <div class="dialog-actions">
+            <button class="btn btn-secondary" onClick="{{ cancelClearHistory }}">Cancel</button>
+            <button class="btn btn-primary" onClick="{{ confirmClearHistory }}">Clear History</button>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+  </div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const LS_KEY = 'pumpTimer.state.v1';
+
+function loadPersisted() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) { return null; }
+}
+
+class Component extends DCLogic {
+  state = {
+    screen: 'library',
+    sequences: [
+      { id: 's0', name: 'Normal STR Mode', dl: 0, phases: phasesFromDL(60,150,210,270,330,390) },
+      { id: 's1', name: 'Dec STR% -25', dl: 2, phases: phasesFromDL(60,150,210,270,450,510) },
+      { id: 's2', name: 'Dec STR% -50', dl: 3, phases: phasesFromDL(60,150,210,270,510,570) },
+      { id: 's3', name: 'Inc STR% 10', dl: 4, phases: phasesFromDL(60,150,210,270,570,630) },
+      { id: 's4', name: 'Inc TF 90', dl: 9, phases: phasesFromDL(60,150,270,330,390,450) },
+      { id: 's5', name: 'Vert STR Mode', dl: 20, phases: phasesFromDL(60,150,330,390,570,630) },
+      { id: 's6', name: 'MTF Mode', dl: 36, phases: phasesFromDL(60,150,450,510,570,630) },
+    ],
+    history: [
+      { id:'h0', name:'Normal STR Mode', dl:0, when:'Today, 06:14', status:'Completed' },
+      { id:'h1', name:'Dec STR% -25', dl:2, when:'Yesterday, 19:02', status:'Completed' },
+      { id:'h2', name:'Inc TF 90', dl:9, when:'Yesterday, 14:47', status:'Stopped early' },
+    ],
+    query: '',
+    builderMode: 'dl',
+    builderName: '',
+    builderDL: null,
+    manual: { h1:60, l1:150, h2:60, l2:60, h3:60, l3:60 },
+    activeSeqId: null,
+    run: null, // {phaseIdx, remainingMs, running, seq}
+    importStep: 'picker',
+    importFilename: null,
+    importQuery: '',
+    importSelected: [],
+    toast: null,
+    showDeleteConfirm: false,
+    showClearHistoryConfirm: false,
+  };
+
+  fileInputRef = React.createRef();
+
+  askClearHistory() { this.setState({ showClearHistoryConfirm: true }); }
+  cancelClearHistory() { this.setState({ showClearHistoryConfirm: false }); }
+  confirmClearHistory() {
+    this.persist({ history: [] });
+    this.setState({ history: [], showClearHistoryConfirm: false, toast: 'History cleared' });
+    setTimeout(() => this.setState({ toast: null }), 2200);
+  }
+
+  askDeleteAll() { this.setState({ showDeleteConfirm: true }); }
+  cancelDeleteAll() { this.setState({ showDeleteConfirm: false }); }
+  confirmDeleteAll() {
+    this.persist({ sequences: [] });
+    this.setState({ sequences: [], showDeleteConfirm: false, toast: 'All sequences deleted' });
+    setTimeout(() => this.setState({ toast: null }), 2200);
+  }
+
+  componentDidMount() {
+    this._lastTick = performance.now();
+    this._interval = setInterval(() => this.tick(), 200);
+    this._clickHandler = (e) => {
+      if (e.target.closest('button, input[type="checkbox"], .tap')) this.playTap();
+    };
+    document.addEventListener('click', this._clickHandler, true);
+    document.documentElement.style.overscrollBehaviorY = 'contain';
+    document.body.style.overscrollBehaviorY = 'contain';
+    const persisted = loadPersisted();
+    if (persisted) this.setState({ sequences: persisted.sequences || [], history: persisted.history || [] });
+  }
+
+  persist(extra) {
+    try {
+      const sequences = extra && extra.sequences !== undefined ? extra.sequences : this.state.sequences;
+      const history = extra && extra.history !== undefined ? extra.history : this.state.history;
+      localStorage.setItem(LS_KEY, JSON.stringify({ sequences, history }));
+    } catch (e) {}
+  }
+  componentWillUnmount() {
+    clearInterval(this._interval);
+    document.removeEventListener('click', this._clickHandler, true);
+  }
+
+  ensureAudio() {
+    if (!this._audioCtx) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      this._audioCtx = new Ctx();
+    }
+    if (this._audioCtx.state === 'suspended') this._audioCtx.resume();
+    return this._audioCtx;
+  }
+
+  playBell() {
+    const ctx = this.ensureAudio();
+    for (let i = 0; i < 3; i++) {
+      const t = ctx.currentTime + i * 0.22;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1568, t);
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.9, t + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.23);
+    }
+    if (navigator.vibrate) navigator.vibrate([120, 80, 120, 80, 120]);
+  }
+
+  playTap() {
+    try {
+      const ctx = this.ensureAudio();
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(1200, t);
+      gain.gain.setValueAtTime(0.12, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.06);
+    } catch (e) {}
+    if (navigator.vibrate) navigator.vibrate(10);
+  }
+
+  tick() {
+    const now = performance.now();
+    const dt = now - this._lastTick;
+    this._lastTick = now;
+    if (this.state.screen !== 'run' || !this.state.run || !this.state.run.running) return;
+    this.setState(s => {
+      const run = { ...s.run };
+      const phase = run.seq.phases[run.phaseIdx];
+      if (phase.duration == null) return { run }; // final holding phase, no countdown
+      run.remainingMs = Math.max(0, run.remainingMs - dt);
+      if (run.remainingMs <= 0 && run.phaseIdx < run.seq.phases.length - 1) {
+        run.phaseIdx += 1;
+        const next = run.seq.phases[run.phaseIdx];
+        run.remainingMs = next.duration != null ? next.duration * 1000 : 0;
+        this.playBell();
+      }
+      return { run };
+    });
+  }
+
+  goTo(screen) { this.setState({ screen }); }
+
+  openBuilder() {
+    this.setState({ screen: 'builder', builderMode: 'dl', builderName: '', builderDL: null, query: '',
+      manual: { h1:60, l1:150, h2:60, l2:60, h3:60, l3:60 } });
+  }
+
+  pickDL(row) {
+    this.setState({ builderDL: row, builderName: nameForDLRow(row) });
+  }
+
+  setManual(key, val) {
+    const v = Math.max(0, parseInt(val) || 0);
+    this.setState(s => ({ manual: { ...s.manual, [key]: v } }));
+  }
+
+  saveSequence() {
+    const { builderMode, builderDL, manual, builderName } = this.state;
+    let phases, dl;
+    if (builderMode === 'dl') {
+      if (!builderDL) return;
+      phases = phasesFromDL(builderDL.F, builderDL.G, builderDL.H, builderDL.I, builderDL.J, builderDL.K);
+      dl = builderDL.dl;
+    } else {
+      phases = phasesFromManual(manual);
+      dl = null;
+    }
+    const name = builderName.trim() || (dl != null ? ('DL ' + dl) : 'Custom sequence');
+    const seq = { id: 'seq_' + Date.now(), name, dl, phases };
+    this.setState(s => {
+      const sequences = [seq, ...s.sequences];
+      this.persist({ sequences });
+      return { sequences, screen: 'library', toast: 'Saved "' + name + '"' };
+    });
+    setTimeout(() => this.setState({ toast: null }), 2200);
+  }
+
+  startSequence(seq) {
+    const first = seq.phases[0];
+    this.setState({
+      screen: 'run',
+      activeSeqId: seq.id,
+      run: { seq, phaseIdx: 0, remainingMs: first.duration * 1000, running: false, started: false },
+    });
+  }
+
+  beginRun() {
+    this.setState(s => ({ run: { ...s.run, running: true, started: true } }));
+  }
+
+  togglePause() {
+    this.setState(s => ({ run: { ...s.run, running: !s.run.running } }));
+  }
+
+  nextPhase() {
+    this.setState(s => {
+      const run = { ...s.run };
+      if (run.phaseIdx >= run.seq.phases.length - 1) return { run };
+      run.phaseIdx += 1;
+      const next = run.seq.phases[run.phaseIdx];
+      run.remainingMs = next.duration != null ? next.duration * 1000 : 0;
+      this.playBell();
+      return { run };
+    });
+  }
+
+  endRun(status) {
+    const run = this.state.run;
+    if (run) {
+      const entry = { id: 'h_' + Date.now(), name: run.seq.name, dl: run.seq.dl, when: 'Just now', status };
+      this.setState(s => {
+        const history = [entry, ...s.history];
+        this.persist({ history });
+        return { screen: 'library', run: null, history };
+      });
+    } else {
+      this.setState({ screen: 'library', run: null });
+    }
+  }
+
+  openImport() {
+    this.setState({ screen: 'import', importStep: 'picker', importFilename: null, importQuery: '', importSelected: [] });
+  }
+
+  triggerFilePicker() { this.fileInputRef.current && this.fileInputRef.current.click(); }
+
+  handleFileChosen(e) {
+    const file = e.target.files && e.target.files[0];
+    const name = file ? file.name : 'DL table - 03-09-26.xlsx';
+    this.setState({ importStep: 'parsing', importFilename: name });
+    setTimeout(() => this.setState({ importStep: 'select' }), 900);
+    e.target.value = '';
+  }
+
+  toggleImportRow(dl) {
+    this.setState(s => {
+      const has = s.importSelected.includes(dl);
+      return { importSelected: has ? s.importSelected.filter(d => d !== dl) : [...s.importSelected, dl] };
+    });
+  }
+
+  selectAllImportRows(rows) {
+    this.setState(s => {
+      const allSelected = rows.every(r => s.importSelected.includes(r.dl));
+      return { importSelected: allSelected ? [] : rows.map(r => r.dl) };
+    });
+  }
+
+  importRows(dlList) {
+    const existing = new Set(this.state.sequences.map(s => s.dl));
+    const toAdd = dlList
+      .filter(dl => !existing.has(dl))
+      .map(dl => {
+        const row = window.DL_TABLE.find(r => r.dl === dl);
+        return { id: 'seq_' + dl + '_' + Date.now(), name: nameForDLRow(row), dl: row.dl, phases: phasesFromDL(row.F,row.G,row.H,row.I,row.J,row.K) };
+      });
+    this.setState(s => {
+      const sequences = [...toAdd, ...s.sequences];
+      this.persist({ sequences });
+      return {
+        sequences,
+        screen: 'library',
+        toast: toAdd.length + ' sequence' + (toAdd.length === 1 ? '' : 's') + ' imported',
+      };
+    });
+    setTimeout(() => this.setState({ toast: null }), 2200);
+  }
+
+  renderVals() {
+    const s = this.state;
+    const screens = {
+      library: () => this.renderLibrary(),
+      builder: () => this.renderBuilder(),
+      run: () => this.renderRun(),
+      import: () => this.renderImport(),
+      history: () => this.renderHistory(),
+    };
+    const body = screens[s.screen]();
+    return {
+      screenBody: body,
+      showDeleteConfirm: s.showDeleteConfirm,
+      cancelDeleteAll: () => this.cancelDeleteAll(),
+      confirmDeleteAll: () => this.confirmDeleteAll(),
+      showClearHistoryConfirm: s.showClearHistoryConfirm,
+      cancelClearHistory: () => this.cancelClearHistory(),
+      confirmClearHistory: () => this.confirmClearHistory(),
+      isRunScreenDark: false,
+      deviceTitle: '',
+      screenStyle: {
+        minHeight: '100vh', display: 'flex', flexDirection: 'column',
+        position: 'relative', overflow: 'hidden',
+        background: 'var(--color-bg)',
+        fontFamily: 'var(--font-body)', color: 'var(--color-text)',
+      },
+    };
+  }
+
+  // ---------- Screen renderers ----------
+
+  renderTopBar(title, opts) {
+    opts = opts || {};
+    const R = React.createElement;
+    return R('div', { style: {
+      display:'flex', alignItems:'center', justifyContent:'space-between', gap:12,
+      padding:'18px 20px', borderBottom:'2px solid var(--color-divider)', background:'var(--color-bg)', flex:'none',
+    }},
+      R('div', { style: { display:'flex', alignItems:'center', gap:10 } },
+        opts.onBack ? R('button', { className:'tap', onClick: opts.onBack, style: backBtnStyle }, '←') : null,
+        R('span', { style: { fontFamily:'var(--font-heading)', fontWeight:700, fontSize:19, letterSpacing:'-0.01em' } }, title)
+      ),
+      opts.right || null
+    );
+  }
+
+  renderLibrary() {
+    const R = React.createElement;
+    const s = this.state;
+    const q = s.query.trim().toLowerCase().replace(/\s+/g, '');
+    const filtered = s.sequences.filter(seq => {
+      if (!q) return true;
+      const haystack = ('dl ' + (seq.dl != null ? seq.dl : '') + ' ' + seq.name).toLowerCase().replace(/\s+/g, '');
+      return haystack.includes(q);
+    });
+    return R(React.Fragment, null,
+      this.renderTopBar('PUMP DL TIMER', {
+        right: R('div', { style:{ display:'flex', gap:8 } },
+          R('button', { className:'tap', onClick: () => this.openImport(), style: iconBtnStyle, title:'Import' }, '⬇'),
+          R('button', { className:'tap', onClick: () => this.askDeleteAll(), style: iconBtnStyle, title:'Delete all sequences' }, '✕'),
+        )
+      }),
+      R('div', { style:{ padding:'14px 20px', borderBottom:'2px solid var(--color-divider)', flex:'none' } },
+        R('input', {
+          className:'input', placeholder:'Search DL index or name…', value:s.query,
+          onChange: e => this.setState({ query: e.target.value }),
+          style: { width:'100%', font:'15px var(--font-body)' }
+        })
+      ),
+      R('div', { className:'scrollarea', style:{ flex:1, padding:'16px 20px 100px', display:'flex', flexDirection:'column', gap:12 } },
+        filtered.length === 0 ? R('div', { style:{ padding:'40px 0', textAlign:'center', color:'var(--color-neutral-700)', font:'14px var(--font-body)' } }, 'No sequences match.')
+          : filtered.map(seq => this.renderSeqCard(seq)),
+      ),
+      R('div', { style:{ position:'sticky', bottom:0, display:'flex', gap:10, padding:'16px 20px', borderTop:'2px solid var(--color-divider)', background:'var(--color-bg)' } },
+        R('button', { className:'btn btn-secondary', style:{ flex:1 }, onClick: () => this.goTo('history') }, 'History'),
+        R('button', { className:'btn btn-primary', style:{ flex:2 }, onClick: () => this.openBuilder() }, '+ New Sequence')
+      ),
+      s.toast ? this.renderToast(s.toast) : null,
+    );
+  }
+
+  renderSeqCard(seq) {
+    const R = React.createElement;
+    const total = totalFiniteSeconds(seq.phases);
+    return R('div', {
+      key: seq.id, className:'card tap', style:{ cursor:'pointer', padding:0, overflow:'hidden' },
+      onClick: () => this.startSequence(seq),
+    },
+      R('div', { style:{ padding:'14px 16px 10px', display:'flex', justifyContent:'space-between', alignItems:'baseline' } },
+        R('div', null,
+          R('div', { style:{ fontFamily:'var(--font-heading)', fontWeight:700, fontSize:16 } }, seq.name),
+          seq.dl != null ? R('div', { style:{ font:'12px var(--font-body)', color:'var(--color-neutral-700)', marginTop:2 } }, 'DL ' + seq.dl) : R('div', { style:{ font:'12px var(--font-body)', color:'var(--color-neutral-700)', marginTop:2 } }, 'Custom')
+        ),
+        R('span', { className:'tag tag-outline' }, fmtMMSS(total) + '+')
+      ),
+      this.renderPhaseStrip(seq.phases, 8)
+    );
+  }
+
+  renderPhaseStrip(phases, height) {
+    const R = React.createElement;
+    const finite = phases.map(p => p.duration || 0);
+    const total = finite.reduce((a,b)=>a+b,0) || 1;
+    return R('div', { style:{ display:'flex', width:'100%', height } },
+      phases.map((p,i) => R('div', {
+        key:i,
+        style:{
+          width: p.duration ? ((p.duration/total*100) + '%') : '10%',
+          background: p.type === 'low' ? 'var(--status-low)' : 'var(--status-high)',
+          borderRight: i < phases.length-1 ? '1px solid var(--color-bg)' : 'none',
+        }
+      }))
+    );
+  }
+
+  renderToast(msg) {
+    const R = React.createElement;
+    return R('div', { style:{
+      position:'absolute', left:20, right:20, bottom:90, padding:'12px 16px',
+      background:'var(--color-neutral-900)', color:'#fff', font:'13px var(--font-body)', fontWeight:600,
+      boxShadow:'var(--shadow-md)', zIndex:20,
+    }}, msg);
+  }
+
+  renderBuilder() {
+    const R = React.createElement;
+    const s = this.state;
+    const q = s.query.trim().toLowerCase();
+    const rows = (window.DL_TABLE || []).filter(r => !q || String(r.dl).includes(q) || nameForDLRow(r).toLowerCase().includes(q));
+    const previewPhases = s.builderMode === 'dl'
+      ? (s.builderDL ? phasesFromDL(s.builderDL.F,s.builderDL.G,s.builderDL.H,s.builderDL.I,s.builderDL.J,s.builderDL.K) : null)
+      : phasesFromManual(s.manual);
+    return R(React.Fragment, null,
+      this.renderTopBar('NEW SEQUENCE', { onBack: () => this.goTo('library') }),
+      R('div', { className:'scrollarea', style:{ flex:1, padding:'16px 20px 24px', display:'flex', flexDirection:'column', gap:16 } },
+        R('div', { className:'seg', style:{ display:'flex' } },
+          R('button', { className:'seg-opt' + (s.builderMode==='dl' ? ' active':''), style:segOptStyle(s.builderMode==='dl'), onClick: () => this.setState({ builderMode:'dl' }) }, 'From DL Table'),
+          R('button', { className:'seg-opt' + (s.builderMode==='manual' ? ' active':''), style:segOptStyle(s.builderMode==='manual'), onClick: () => this.setState({ builderMode:'manual' }) }, 'Manual Entry'),
+        ),
+        s.builderMode === 'dl' ? R(React.Fragment, null,
+          R('input', { className:'input', placeholder:'Search DL index or comment…', value:s.query, onChange: e => this.setState({ query:e.target.value }), style:{ width:'100%', font:'15px var(--font-body)' } }),
+          R('div', { style:{ display:'flex', flexDirection:'column', gap:8, maxHeight:280, overflowY:'auto', border:'2px solid var(--color-divider)' } },
+            rows.slice(0,40).map(r => R('div', {
+              key:r.dl, className:'tap', onClick: () => this.pickDL(r),
+              style:{
+                padding:'10px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', cursor:'pointer',
+                background: s.builderDL && s.builderDL.dl===r.dl ? 'var(--color-accent-100)' : 'transparent',
+                borderBottom:'1px solid var(--color-divider)',
+              }
+            },
+              R('span', { style:{ font:'14px var(--font-body)' } }, 'DL ' + r.dl + ' — ' + nameForDLRow(r)),
+              R('span', { style:{ font:'12px ui-monospace,monospace', color:'var(--color-neutral-700)' } }, r.F+'/'+r.G+'/'+r.H+'/'+r.I+'/'+r.J+'/'+r.K)
+            ))
+          )
+        ) : R('div', { style:{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 } },
+          this.renderManualField('High 1 (start)', 'h1'),
+          this.renderManualField('Low 1', 'l1'),
+          this.renderManualField('High 2', 'h2'),
+          this.renderManualField('Low 2', 'l2'),
+          this.renderManualField('High 3', 'h3'),
+          this.renderManualField('Low 3', 'l3'),
+        ),
+        previewPhases ? R('div', null,
+          R('div', { style:{ font:'12px var(--font-body)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.04em', color:'var(--color-neutral-700)', marginBottom:6 } }, 'Preview'),
+          this.renderPhaseStrip(previewPhases, 14),
+          R('div', { style:{ display:'flex', justifyContent:'space-between', font:'11px ui-monospace,monospace', color:'var(--color-neutral-700)', marginTop:4 } },
+            R('span', null, 'HIGH → LOW → HIGH → LOW → HIGH → LOW → HIGH (final)'),
+          )
+        ) : null,
+        R('div', { className:'field' },
+          R('label', null, 'Sequence name'),
+          R('input', { className:'input', placeholder:'e.g. Dec STR% -25', value:s.builderName, onChange: e => this.setState({ builderName:e.target.value }) })
+        ),
+      ),
+      R('div', { style:{ padding:'16px 20px', borderTop:'2px solid var(--color-divider)' } },
+        R('button', { className:'btn btn-primary btn-block', disabled: s.builderMode==='dl' && !s.builderDL, onClick: () => this.saveSequence() }, 'Save Sequence')
+      )
+    );
+  }
+
+  renderManualField(label, key) {
+    const R = React.createElement;
+    return R('div', { className:'field', key },
+      R('label', null, label + ' (sec)'),
+      R('input', { className:'input', type:'number', min:0, value:this.state.manual[key], onChange: e => this.setManual(key, e.target.value) })
+    );
+  }
+
+  renderRun() {
+    const R = React.createElement;
+    const s = this.state;
+    const run = s.run;
+    const phase = run.seq.phases[run.phaseIdx];
+    const isFinal = phase.duration == null;
+    const isLow = phase.type === 'low';
+    const fg = isLow ? '#fff' : 'var(--color-text)';
+
+    if (!run.started) {
+      return R(React.Fragment, null,
+        R('div', { style:{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'18px 20px', flex:'none' } },
+          R('button', { className:'tap', onClick: () => this.endRun('Stopped early'), style: backBtnStyle }, '✕'),
+          R('div', { style:{ textAlign:'center' } },
+            R('div', { style:{ font:'11px var(--font-body)', fontWeight:700, letterSpacing:'.08em', color:'var(--color-neutral-700)', textTransform:'uppercase' } }, run.seq.dl != null ? 'DL ' + run.seq.dl : 'CUSTOM'),
+            R('div', { style:{ font:'13px var(--font-body)', fontWeight:600 } }, run.seq.name),
+          ),
+          R('div', { style:{ width:36 } })
+        ),
+        R('div', { style:{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:22, padding:'0 24px' } },
+          R('button', {
+            className:'tap', onClick: () => this.beginRun(),
+            style:{
+              width:336, height:336, borderRadius:'50%', border:'6px solid var(--color-text)',
+              background:'var(--status-green)', color:'#fff', cursor:'pointer',
+              fontFamily:'var(--font-heading)', fontWeight:800, fontSize:32, letterSpacing:'.03em', textTransform:'uppercase',
+            }
+          }, 'Start'),
+          R('div', { style:{ height:22 } })
+        ),
+        R('div', { style:{ padding:'0 20px 8px', flex:'none' } }, this.renderRunTimelineStrip(run.seq.phases, 0)),
+        R('div', { style:{ display:'flex', gap:10, padding:'12px 20px 22px', flex:'none', visibility:'hidden' } },
+          R('button', { className:'btn btn-secondary', style:{ flex:1 } }, 'Pause'),
+          R('button', { className:'btn btn-secondary', style:{ flex:1 } }, 'Skip →'),
+          R('button', { className:'btn btn-primary', style:{ flex:1 } }, 'End')
+        ),
+      );
+    }
+
+    const statusColor = isLow ? 'var(--status-low)' : 'var(--status-high)';
+    const progress = computeProgressFraction(run.seq.phases, run.phaseIdx, run.remainingMs);
+    const warning = !isFinal && run.remainingMs <= 10000;
+    const blinkAnim = warning ? 'pulse 1.6s ease-in-out infinite' : 'none';
+    return R(React.Fragment, null,
+      R('div', { style:{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'18px 20px', flex:'none' } },
+        R('button', { className:'tap', onClick: () => this.endRun('Stopped early'), style: backBtnStyle }, '✕'),
+        R('div', { style:{ textAlign:'center' } },
+          R('div', { style:{ font:'11px var(--font-body)', fontWeight:700, letterSpacing:'.08em', color:'var(--color-neutral-700)', textTransform:'uppercase' } }, run.seq.dl != null ? 'DL ' + run.seq.dl : 'CUSTOM'),
+          R('div', { style:{ font:'13px var(--font-body)', fontWeight:600 } }, run.seq.name),
+        ),
+        R('div', { style:{ width:36 } })
+      ),
+      R('div', { style:{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:22, padding:'0 24px' } },
+        R('div', {
+          style:{
+            width:336, height:336, borderRadius:'50%', border:'12px solid ' + statusColor,
+            display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:12,
+            background:'var(--color-bg)', animation: blinkAnim,
+          }
+        },
+          R('div', {
+            style:{
+              fontFamily:'var(--font-heading)', fontWeight:800, fontSize:28, letterSpacing:'-.01em',
+              color: statusColor, textTransform:'uppercase', textAlign:'center',
+            }
+          }, isLow ? 'PUMPS LOW' : 'PUMPS HIGH'),
+          R('div', { style:{ fontFamily:'ui-monospace,monospace', fontWeight:700, fontSize:68, color:'var(--color-text)', lineHeight:1 } },
+            isFinal ? '∞' : fmtMMSS(Math.ceil(run.remainingMs/1000))
+          ),
+          R('div', { style:{ font:'15px var(--font-body)', color:'var(--color-neutral-700)', fontWeight:600 } },
+            'Phase ' + (run.phaseIdx+1) + ' of ' + run.seq.phases.length
+          ),
+        ),
+        R('div', { style:{ height:22, display:'flex', alignItems:'center', justifyContent:'center' } },
+          isFinal ? R('div', { style:{ font:'13px var(--font-body)', color:'var(--color-neutral-700)', fontWeight:600, textAlign:'center' } }, 'Final state — hold until next downlink')
+            : R('div', {
+              style:{
+                font:'16px var(--font-body)', fontWeight:800, letterSpacing:'.04em', textTransform:'uppercase',
+                color: statusColor, textAlign:'center', animation: blinkAnim, visibility: warning ? 'visible' : 'hidden',
+              }
+            }, 'Prepare to change state')
+        ),
+      ),
+      R('div', { style:{ textAlign:'center', font:'13px ui-monospace,monospace', fontWeight:700, color:'var(--color-neutral-700)', padding:'0 20px 8px', flex:'none' } },
+        fmtMMSS(computeTimeToCompletion(run.seq.phases, run.phaseIdx, run.remainingMs)) + ' to completion'
+      ),
+      R('div', { style:{ padding:'0 20px 8px', flex:'none' } }, this.renderRunTimelineStrip(run.seq.phases, progress)),
+      R('div', { style:{ display:'flex', gap:10, padding:'12px 20px 22px', flex:'none' } },
+        !isFinal ? R('button', {
+          className:'btn btn-secondary tap', onClick: () => this.togglePause(),
+          style:{ flex:1 }
+        }, run.running ? 'Pause' : 'Resume') : null,
+        !isFinal ? R('button', {
+          className:'btn btn-secondary tap', onClick: () => this.nextPhase(),
+          style:{ flex:1 }
+        }, 'Skip →') : null,
+        R('button', {
+          className:'btn btn-primary tap', onClick: () => this.endRun(isFinal ? 'Completed' : 'Stopped early'),
+          style:{ flex:1 }
+        }, isFinal ? 'Finish' : 'End')
+      ),
+    );
+  }
+
+  renderRunTimelineStrip(phases, progress) {
+    const R = React.createElement;
+    const finiteTotal = phases.slice(0,6).reduce((a,p) => a + (p.duration||0), 0) || 1;
+    let cursor = 0;
+    const segs = phases.map((p, i) => {
+      const isFinalSeg = p.duration == null;
+      const widthPct = isFinalSeg ? 10 : (p.duration / finiteTotal) * 90;
+      const seg = { left: cursor, width: widthPct, color: p.type === 'low' ? 'var(--status-low)' : 'var(--status-high)' };
+      cursor += widthPct;
+      return seg;
+    });
+    return R('div', { style:{ position:'relative', height:20, display:'flex', alignItems:'center' } },
+      R('div', { style:{ position:'absolute', left:0, right:0, top:5, height:10, display:'flex' } },
+        segs.map((seg,i) => R('div', { key:i, style:{
+          width: seg.width + '%', background: seg.color,
+          borderRight: i < segs.length-1 ? '1px solid var(--color-bg)' : 'none',
+        }}))
+      ),
+      R('div', { style:{
+        position:'absolute', left: 'calc(' + (progress*100) + '% - 8px)', top:2, width:16, height:16, borderRadius:'50%',
+        background:'#fff', border:'3px solid var(--color-text)', boxShadow:'var(--shadow-sm)', transition:'left .2s linear',
+      }})
+    );
+  }
+
+  renderImport() {
+    const R = React.createElement;
+    const s = this.state;
+    const hiddenInput = R('input', {
+      ref: this.fileInputRef, type:'file', accept:'.xlsx,.xls', style:{ display:'none' },
+      onChange: e => this.handleFileChosen(e),
+    });
+
+    if (s.importStep === 'picker') {
+      return R(React.Fragment, null,
+        this.renderTopBar('IMPORT SEQUENCES', { onBack: () => this.goTo('library') }),
+        hiddenInput,
+        R('div', { style:{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:16, padding:'0 32px', textAlign:'center' } },
+          R('div', { style:{ width:64, height:64, border:'2px solid var(--color-text)', display:'flex', alignItems:'center', justifyContent:'center', font:24 } }, '📄'),
+          R('div', { style:{ fontFamily:'var(--font-heading)', fontWeight:700, fontSize:17 } }, 'Select the sequence planner'),
+          R('div', { style:{ font:'13px var(--font-body)', color:'var(--color-neutral-700)', lineHeight:1.5 } },
+            'Choose the DL Table workbook from your phone — saved from email, OneDrive or Google Drive.'),
+          R('button', { className:'btn btn-primary', onClick: () => this.triggerFilePicker() }, 'Choose File')
+        )
+      );
+    }
+    if (s.importStep === 'parsing') {
+      return R(React.Fragment, null,
+        this.renderTopBar('IMPORT SEQUENCES', { onBack: () => this.goTo('library') }),
+        R('div', { style:{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10 } },
+          R('div', { style:{ fontFamily:'var(--font-heading)', fontWeight:700, fontSize:15, animation:'pulse 1s ease-in-out infinite' } }, 'Reading DL Table…'),
+          R('div', { style:{ font:'12px var(--font-body)', color:'var(--color-neutral-700)' } }, s.importFilename)
+        )
+      );
+    }
+
+    // select step
+    const q = s.importQuery.trim().toLowerCase();
+    const rows = (window.DL_TABLE || []).filter(r => !q || String(r.dl).includes(q) || nameForDLRow(r).toLowerCase().includes(q));
+    const selected = s.importSelected;
+    const allSelected = rows.length > 0 && rows.every(r => selected.includes(r.dl));
+    return R(React.Fragment, null,
+      this.renderTopBar('IMPORT SEQUENCES', {
+        onBack: () => this.goTo('library'),
+        right: R('button', { className:'tap', onClick: () => this.importRows(rows.map(r=>r.dl)), style:{ ...iconBtnStyle, width:'auto', padding:'0 10px', font:'12px var(--font-body)', fontWeight:700 } }, 'Import All'),
+      }),
+      R('div', { style:{ padding:'10px 20px', font:'12px var(--font-body)', color:'var(--color-neutral-700)', borderBottom:'2px solid var(--color-divider)' } }, s.importFilename + ' · DL Table · ' + (window.DL_TABLE||[]).length + ' entries'),
+      R('div', { style:{ padding:'12px 20px 0' } },
+        R('input', { className:'input', placeholder:'Search DL index or comment…', value:s.importQuery, onChange: e => this.setState({ importQuery:e.target.value }), style:{ width:'100%', font:'14px var(--font-body)' } })
+      ),
+      R('div', { className:'tap', onClick: () => this.selectAllImportRows(rows), style:{ display:'flex', alignItems:'center', gap:10, padding:'10px 20px', cursor:'pointer', font:'13px var(--font-body)', fontWeight:700 } },
+        R('input', { type:'checkbox', checked:allSelected, readOnly:true, style:{ width:18, height:18 } }),
+        R('span', null, allSelected ? 'Clear all' : 'Select all')
+      ),
+      R('div', { className:'scrollarea', style:{ flex:1, padding:'0 20px 100px' } },
+        rows.map(r => {
+          const checked = selected.includes(r.dl);
+          const phases = phasesFromDL(r.F,r.G,r.H,r.I,r.J,r.K);
+          return R('div', {
+            key:r.dl, className:'tap', onClick: () => this.toggleImportRow(r.dl),
+            style:{ display:'flex', alignItems:'center', gap:10, padding:'10px 0', borderBottom:'1px solid var(--color-divider)', cursor:'pointer' }
+          },
+            R('input', { type:'checkbox', checked, readOnly:true, style:{ width:18, height:18, flex:'none' } }),
+            R('div', { style:{ flex:1, minWidth:0 } },
+              R('div', { style:{ font:'14px var(--font-body)', fontWeight:600 } }, 'DL ' + r.dl + ' — ' + nameForDLRow(r)),
+              R('div', { style:{ marginTop:5 } }, this.renderPhaseStrip(phases, 6))
+            )
+          );
+        })
+      ),
+      R('div', { style:{ position:'sticky', bottom:0, display:'flex', flexDirection:'column', gap:8, padding:'12px 20px 18px', borderTop:'2px solid var(--color-divider)', background:'var(--color-bg)' } },
+        R('div', { style:{ font:'12px var(--font-body)', color:'var(--color-neutral-700)' } }, selected.length + ' selected'),
+        R('button', { className:'btn btn-primary btn-block', disabled: selected.length === 0, onClick: () => this.importRows(selected) }, 'Import Selected')
+      )
+    );
+  }
+
+  renderHistory() {
+    const R = React.createElement;
+    const s = this.state;
+    return R(React.Fragment, null,
+      this.renderTopBar('RUN HISTORY', {
+        onBack: () => this.goTo('library'),
+        right: s.history.length > 0 ? R('button', { className:'tap', onClick: () => this.askClearHistory(), style:{ ...iconBtnStyle, width:'auto', padding:'0 10px', font:'12px var(--font-body)', fontWeight:700 } }, 'Clear History') : null,
+      }),
+      R('div', { className:'scrollarea', style:{ flex:1, padding:'16px 20px', display:'flex', flexDirection:'column', gap:10 } },
+        s.history.length === 0 ? R('div', { style:{ padding:'40px 0', textAlign:'center', color:'var(--color-neutral-700)' } }, 'No runs yet.')
+          : s.history.map(h => R('div', { key:h.id, className:'card', style:{ padding:'12px 14px' } },
+            R('div', { style:{ display:'flex', justifyContent:'space-between', alignItems:'baseline' } },
+              R('div', { style:{ fontFamily:'var(--font-heading)', fontWeight:700, fontSize:15 } }, h.name),
+              R('span', { className: 'tag ' + (h.status === 'Completed' ? 'tag-neutral' : 'tag-accent') }, h.status)
+            ),
+            R('div', { style:{ font:'12px var(--font-body)', color:'var(--color-neutral-700)', marginTop:4 } },
+              (h.dl != null ? 'DL ' + h.dl + ' · ' : '') + h.when)
+          ))
+      )
+    );
+  }
+}
+
+function nameForDLRow(row) {
+  if (row.comment) return row.comment;
+  const tf = row.tf != null ? row.tf : 0;
+  const steer = row.steer != null ? row.steer : 0;
+  return tf + ' deg TF, ' + steer + '% Steer';
+}
+function phasesFromDL(F,G,H,I,J,K) {
+  return [
+    { type:'high', duration: F },
+    { type:'low', duration: G - F },
+    { type:'high', duration: H - G },
+    { type:'low', duration: I - H },
+    { type:'high', duration: J - I },
+    { type:'low', duration: K - J },
+    { type:'high', duration: null },
+  ];
+}
+function phasesFromManual(m) {
+  return [
+    { type:'high', duration: m.h1 },
+    { type:'low', duration: m.l1 },
+    { type:'high', duration: m.h2 },
+    { type:'low', duration: m.l2 },
+    { type:'high', duration: m.h3 },
+    { type:'low', duration: m.l3 },
+    { type:'high', duration: null },
+  ];
+}
+function totalFiniteSeconds(phases) {
+  return phases.reduce((a,p) => a + (p.duration || 0), 0);
+}
+function computeTimeToCompletion(phases, phaseIdx, remainingMs) {
+  if (phaseIdx >= 6) return 0;
+  let remaining = remainingMs / 1000;
+  for (let i = phaseIdx + 1; i < 6; i++) remaining += phases[i].duration;
+  return Math.max(0, Math.ceil(remaining));
+}
+function computeProgressFraction(phases, phaseIdx, remainingMs) {
+  const finiteTotal = phases.slice(0,6).reduce((a,p) => a + (p.duration||0), 0) || 1;
+  if (phaseIdx >= 6) return 1;
+  let before = 0;
+  for (let i = 0; i < phaseIdx; i++) before += phases[i].duration;
+  const cur = phases[phaseIdx];
+  const elapsedInPhase = cur.duration - remainingMs/1000;
+  return ((before + elapsedInPhase) / finiteTotal) * 0.9;
+}
+function fmtMMSS(totalSec) {
+  const m = Math.floor(totalSec / 60), sec = Math.floor(totalSec % 60);
+  return m + ':' + String(sec).padStart(2,'0');
+}
+function segOptStyle(active) {
+  return {
+    flex:1, padding:'10px 12px', font:'13px var(--font-body)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.03em',
+    border:'2px solid var(--color-divider)', background: active ? 'var(--color-text)' : 'transparent',
+    color: active ? '#fff' : 'var(--color-text)', cursor:'pointer',
+  };
+}
+const backBtnStyle = {
+  width:36, height:36, border:'2px solid var(--color-text)', background:'transparent', font:16, cursor:'pointer',
+  display:'flex', alignItems:'center', justifyContent:'center', color:'var(--color-text)',
+};
+const iconBtnStyle = {
+  width:44, height:44, border:'2px solid var(--color-text)', background:'transparent', font:22, fontWeight:800, cursor:'pointer',
+  display:'flex', alignItems:'center', justifyContent:'center', color:'var(--color-text)',
+};
+
+</script>
+</body>
+</html>
