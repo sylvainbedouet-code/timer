@@ -1,9 +1,10 @@
-const CACHE = 'pump-timer-v1';
+const CACHE = 'pump-timer-v2';
 const SHELL = [
   './index.html',
   './manifest.json',
   './dl-data.js',
-  './android-frame.jsx',
+  './support.js',
+  './xlsx.full.min.js',
   './icon-192.png',
   './icon-512.png',
 ];

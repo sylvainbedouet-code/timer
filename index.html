@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="_ds/modernist-9807d20a-14e0-46e4-acde-1b48e5a8bf68/styles.css">
   <script src="_ds/modernist-9807d20a-14e0-46e4-acde-1b48e5a8bf68/_ds_bundle.js"></script>
   <script src="./dl-data.js"></script>
+  <script src="./xlsx.full.min.js"></script>
   <style>
     html,body{overscroll-behavior-y:contain}
     body{margin:0;background:var(--color-neutral-200);font-family:var(--font-body)}
@@ -73,6 +74,7 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script>
 const LS_KEY = 'pumpTimer.state.v1';
+const LS_DL_TABLE_KEY = 'pumpTimer.dlTable.v1';
 
 function loadPersisted() {
   try {
@@ -80,6 +82,82 @@ function loadPersisted() {
     if (!raw) return null;
     return JSON.parse(raw);
   } catch (e) { return null; }
+}
+
+function loadPersistedDLTable() {
+  try {
+    const raw = localStorage.getItem(LS_DL_TABLE_KEY);
+    if (!raw) return null;
+    const table = JSON.parse(raw);
+    return Array.isArray(table) && table.length ? table : null;
+  } catch (e) { return null; }
+}
+
+function persistDLTable(table) {
+  try { localStorage.setItem(LS_DL_TABLE_KEY, JSON.stringify(table)); } catch (e) {}
+}
+
+// Column headers as they appear in the "DL Table" sheet of the DL Table workbook.
+// Matched case-insensitively; falls back to fixed column letters (A,C,D,E,F,G,H,I,J,K)
+// if a header can't be found, so a minor header rename doesn't break the import.
+const DL_HEADER_MAP = {
+  dl: ['dl index'],
+  tf: ['tf cmd'],
+  steer: ['steering%', 'steering %'],
+  comment: ['comment'],
+  F: ['tlm header start (dwn)'],
+  G: ['param1 start (up)'],
+  H: ['separator start (dwn)'],
+  I: ['param2 start (up)'],
+  J: ['trailer start (dwn)'],
+  K: ['trailer end (up)'],
+};
+const DL_FALLBACK_COL = { dl: 0, tf: 2, steer: 3, comment: 4, F: 5, G: 6, H: 7, I: 8, J: 9, K: 10 };
+
+function findDLTableSheet(wb) {
+  let name = wb.SheetNames.find(n => n.trim().toLowerCase() === 'dl table');
+  if (name) return name;
+  name = wb.SheetNames.find(n => {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1 });
+    const header = (rows[0] || []).map(c => String(c || '').trim().toLowerCase());
+    return header.includes('dl index');
+  });
+  return name || wb.SheetNames[0];
+}
+
+function parseDLTableFromWorkbook(wb) {
+  const sheetName = findDLTableSheet(wb);
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: null });
+  if (!rows.length) throw new Error('Sheet "' + sheetName + '" is empty');
+  const header = rows[0].map(c => String(c || '').trim().toLowerCase());
+
+  const colIndex = {};
+  for (const key of Object.keys(DL_HEADER_MAP)) {
+    const match = DL_HEADER_MAP[key].map(h => header.indexOf(h)).find(i => i !== -1);
+    colIndex[key] = match !== undefined ? match : DL_FALLBACK_COL[key];
+  }
+
+  const num = (v) => (v === null || v === undefined || v === '') ? null : Number(v);
+  const out = [];
+  for (let r = 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row) continue;
+    const dl = num(row[colIndex.dl]);
+    if (dl === null) continue;
+    const F = num(row[colIndex.F]), G = num(row[colIndex.G]), H = num(row[colIndex.H]),
+          I = num(row[colIndex.I]), J = num(row[colIndex.J]), K = num(row[colIndex.K]);
+    if ([F, G, H, I, J, K].some(v => v === null)) continue; // skip rows without full timing
+    const comment = row[colIndex.comment];
+    out.push({
+      dl, F, G, H, I, J, K,
+      tf: num(row[colIndex.tf]),
+      steer: num(row[colIndex.steer]),
+      comment: comment ? String(comment).trim() : '',
+    });
+  }
+  out.sort((a, b) => a.dl - b.dl);
+  if (!out.length) throw new Error('No DL rows found in "' + sheetName + '"');
+  return out;
 }
 
 class Component extends DCLogic {
@@ -144,6 +222,8 @@ class Component extends DCLogic {
     document.body.style.overscrollBehaviorY = 'contain';
     const persisted = loadPersisted();
     if (persisted) this.setState({ sequences: persisted.sequences || [], history: persisted.history || [] });
+    const persistedTable = loadPersistedDLTable();
+    if (persistedTable) window.DL_TABLE = persistedTable;
   }
 
   persist(extra) {
@@ -310,10 +390,30 @@ class Component extends DCLogic {
 
   handleFileChosen(e) {
     const file = e.target.files && e.target.files[0];
-    const name = file ? file.name : 'DL table - 03-09-26.xlsx';
-    this.setState({ importStep: 'parsing', importFilename: name });
-    setTimeout(() => this.setState({ importStep: 'select' }), 900);
     e.target.value = '';
+    if (!file) return;
+    this.setState({ importStep: 'parsing', importFilename: file.name });
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(new Uint8Array(ev.target.result), { type: 'array' });
+        const table = parseDLTableFromWorkbook(wb);
+        window.DL_TABLE = table;
+        persistDLTable(table);
+        this.setState({ importStep: 'select', importSelected: [] });
+      } catch (err) {
+        this.setState({
+          importStep: 'picker',
+          toast: 'Could not read "' + file.name + '": ' + (err && err.message ? err.message : 'unrecognized format'),
+        });
+        setTimeout(() => this.setState({ toast: null }), 3200);
+      }
+    };
+    reader.onerror = () => {
+      this.setState({ importStep: 'picker', toast: 'Could not read "' + file.name + '"' });
+      setTimeout(() => this.setState({ toast: null }), 3200);
+    };
+    reader.readAsArrayBuffer(file);
   }
 
   toggleImportRow(dl) {
@@ -685,7 +785,8 @@ class Component extends DCLogic {
           R('div', { style:{ font:'13px var(--font-body)', color:'var(--color-neutral-700)', lineHeight:1.5 } },
             'Choose the DL Table workbook from your phone — saved from email, OneDrive or Google Drive.'),
           R('button', { className:'btn btn-primary', onClick: () => this.triggerFilePicker() }, 'Choose File')
-        )
+        ),
+        s.toast ? this.renderToast(s.toast) : null,
       );
     }
     if (s.importStep === 'parsing') {
